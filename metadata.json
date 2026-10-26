@@ -1,0 +1,6 @@
+{
+  "name": "LifeFlow Blood Bank — Save Lives, One Drop at a Time",
+  "description": "A professional blood bank management platform connecting donors with urgent hospital requests, featuring real-time blood group stock levels, donor registry, and administrative dispatch controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

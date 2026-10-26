@@ -1,0 +1,22 @@
+> react-example@0.0.0 test
+> tsx tests/api.test.ts
+
+--- Starting LifeFlow Automated Test Suite ---
+  ✓ Health check reports operational status
+  ✓ Blood inventory returns all 8 phenotypes
+  ✓ Inventory contains exact ABO and Rh standard groups
+  ✓ Donor under 18 years is rejected with 400
+  ✓ Valid donor is registered with assigned DNR-xxxx ID
+  ✓ Donor schedule preserves preferred & alternate dates
+  ✓ Donor schedule links chosen donation center
+  ✓ Hospital requisition generates unique collision-free REQ reference
+  ✓ Public tracking retrieves initial Submitted stage
+  ✓ Public tracking does not leak contactEmail or phone
+  ✓ Unauthenticated admin access to requests is blocked with 401
+  ✓ Administrator login succeeds with bearer token
+  ✓ Intake (+) correctly adds units and logs previous/resulting balance
+  ✓ Dispatch (-) is blocked with 400 when requested quantity exceeds available stock
+  ✓ Requisition transitions to Triage Review with audit entry
+  ✓ Audit log contains recorded append-only transactions
+
+--- Test Results: 16 passed, 0 failed ---

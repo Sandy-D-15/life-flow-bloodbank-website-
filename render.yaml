@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: lifeflow-blood-bank
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: USE_JSON_FALLBACK
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OTP_SECRET
+        generateValue: true
+      - key: MONGO_URI
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: FAST2SMS_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD_HASH
+        value: "$2a$12$RWpLTNSMb3vGcEl87YH/qe5W2IMobPSj7.t1LcInUdtqc/XRQj8/K"

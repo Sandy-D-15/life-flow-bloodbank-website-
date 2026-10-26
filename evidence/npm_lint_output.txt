@@ -1,0 +1,4 @@
+> react-example@0.0.0 lint
+> tsc --noEmit
+
+Exit Code: 0 (No type or lint errors detected across TypeScript codebase)
