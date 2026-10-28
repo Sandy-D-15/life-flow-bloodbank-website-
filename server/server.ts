@@ -1059,13 +1059,15 @@ const candidatePaths = [
 const clientDistPath = candidatePaths.find(p => fs.existsSync(p)) || candidatePaths[0];
 const hasClientBuild = fs.existsSync(clientDistPath);
 
-if (hasClientBuild && process.env.NODE_ENV === 'production') {
+if (hasClientBuild) {
+  console.log(`✓ LifeFlow Web UI static files mounted from: ${clientDistPath}`);
   app.use(express.static(clientDistPath));
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
     res.sendFile(path.resolve(clientDistPath, 'index.html'));
   });
 } else {
+  console.warn('⚠️ [LifeFlow Web UI] Notice: Client build directory was not found. Serving API status JSON at root.');
   // Root API status endpoint
   app.get('/', (req, res) => {
     res.json({
