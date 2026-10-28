@@ -3,7 +3,7 @@ services:
     name: lifeflow-blood-bank
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -37,5 +37,9 @@ services:
         sync: false
       - key: ADMIN_USERNAME
         value: admin
-      - key: ADMIN_PASSWORD_HASH
-        value: "$2a$12$RWpLTNSMb3vGcEl87YH/qe5W2IMobPSj7.t1LcInUdtqc/XRQj8/K"
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: STAFF_USERNAME
+        value: staff
+      - key: STAFF_PASSWORD
+        sync: false

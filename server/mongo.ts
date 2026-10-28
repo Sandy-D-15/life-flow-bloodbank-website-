@@ -1,5 +1,12 @@
+
+import dns from 'dns';
 import { MongoClient, Db } from 'mongodb';
 import { DatabaseSchema } from './db.js';
+
+// Configure public DNS servers to prevent Windows querySrv ECONNREFUSED issues
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+} catch {}
 
 let mongoClient: MongoClient | null = null;
 let mongoDb: Db | null = null;
@@ -43,20 +50,44 @@ export async function syncToMongo(data: DatabaseSchema): Promise<void> {
     const txCol = mongoDb.collection('transactions');
 
     if (data.inventory.length > 0) {
-      await invCol.deleteMany({});
-      await invCol.insertMany(data.inventory);
+      const ops = data.inventory.map(({ _id, ...item }: any) => ({
+        updateOne: {
+          filter: { bloodGroup: item.bloodGroup },
+          update: { $set: item },
+          upsert: true,
+        },
+      }));
+      await invCol.bulkWrite(ops);
     }
     if (data.donors.length > 0) {
-      await donorCol.deleteMany({});
-      await donorCol.insertMany(data.donors);
+      const ops = data.donors.map(({ _id, ...item }: any) => ({
+        updateOne: {
+          filter: { id: item.id },
+          update: { $set: item },
+          upsert: true,
+        },
+      }));
+      await donorCol.bulkWrite(ops);
     }
     if (data.requests.length > 0) {
-      await reqCol.deleteMany({});
-      await reqCol.insertMany(data.requests);
+      const ops = data.requests.map(({ _id, ...item }: any) => ({
+        updateOne: {
+          filter: { id: item.id },
+          update: { $set: item },
+          upsert: true,
+        },
+      }));
+      await reqCol.bulkWrite(ops);
     }
     if (data.transactions.length > 0) {
-      await txCol.deleteMany({});
-      await txCol.insertMany(data.transactions);
+      const ops = data.transactions.map(({ _id, ...item }: any) => ({
+        updateOne: {
+          filter: { id: item.id },
+          update: { $set: item },
+          upsert: true,
+        },
+      }));
+      await txCol.bulkWrite(ops);
     }
   } catch (err: any) {
     console.error('Failed to sync data with MongoDB Atlas:', err.message);

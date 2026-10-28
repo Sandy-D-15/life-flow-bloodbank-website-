@@ -25,7 +25,9 @@ import {
   AlertCircle,
   KeyRound,
   ChevronRight,
-  Home
+  Home,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { 
   BloodStockItem, 
@@ -59,9 +61,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onRefreshInventory,
   onBackToPublic
 }) => {
-  // Login form state
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('LifeFlow@2026Admin');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [selectedRolePreset, setSelectedRolePreset] = useState<'admin' | 'staff'>('admin');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -133,6 +135,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setLoginError(err.message || 'Login failed');
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleResetLockout = async () => {
+    try {
+      await fetch('/api/auth/reset-limits', { method: 'POST' });
+      setLoginError(null);
+    } catch {
+      setLoginError(null);
     }
   };
 
@@ -346,7 +357,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               type="button"
               onClick={() => {
                 setUsername('admin');
-                setPassword('LifeFlow@2026Admin');
+                setPassword('');
                 setSelectedRolePreset('admin');
               }}
               className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
@@ -368,7 +379,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               type="button"
               onClick={() => {
                 setUsername('staff');
-                setPassword('CampStaff@2026');
+                setPassword('');
                 setSelectedRolePreset('staff');
               }}
               className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
@@ -387,32 +398,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </button>
           </div>
 
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-5 text-xs text-amber-900 space-y-1">
-            <div className="font-semibold flex items-center gap-1.5">
-              <ShieldCheck className="w-4 h-4 text-amber-700" />
-              Active Role Credentials:
-            </div>
-            <div className="font-mono text-[11px] bg-white/80 p-2 rounded border border-amber-100">
-              Username: <span className="font-bold text-slate-900">{username}</span>
-              <br />
-              Password: <span className="font-bold text-slate-900">{password}</span>
-            </div>
-          </div>
-
           {loginError && (
-            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-lg flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-              <span>{loginError}</span>
+            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-lg flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{loginError}</span>
+              </div>
+              {loginError.includes('Too many') && (
+                <button
+                  type="button"
+                  onClick={handleResetLockout}
+                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[11px] font-semibold shrink-0 cursor-pointer shadow-sm transition-colors"
+                >
+                  Clear Lock
+                </button>
+              )}
             </div>
           )}
 
-          <form onSubmit={handleLoginSubmit} className="space-y-4">
+          <form onSubmit={handleLoginSubmit} autoComplete="off" className="space-y-4">
+            {/* Decoy fields to intercept aggressive browser password manager autofill */}
+            <input type="text" name="fake_user" style={{ display: 'none' }} tabIndex={-1} autoComplete="off" />
+            <input type="password" name="fake_pass" style={{ display: 'none' }} tabIndex={-1} autoComplete="new-password" />
+
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Username</label>
               <input
                 type="text"
+                name="portal_username"
+                id="portal_username"
+                autoComplete="off"
+                data-lpignore="true"
                 required
                 value={username}
+                placeholder="Enter username (e.g. admin or staff)"
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
               />
@@ -420,13 +439,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Password</label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  name="portal_password"
+                  id="portal_password"
+                  autoComplete="new-password"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  required
+                  value={password}
+                  placeholder="Enter password"
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-3.5 pr-10 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <button

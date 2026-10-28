@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { 
   BloodStockItem, 
   Donor, 
@@ -11,10 +12,18 @@ import {
   RequestStage,
   RequestStatus,
   InventoryOperation
-} from '../src/types/index.js';
+} from './types/index.js';
 import { syncToMongo } from './mongo.js';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const candidateDataDirs = [
+  path.resolve(__dirname, 'data'),
+  path.resolve(__dirname, '..', 'data'),
+  path.resolve(process.cwd(), 'server', 'data'),
+  path.resolve(process.cwd(), 'data')
+];
+const DATA_DIR = candidateDataDirs.find(d => fs.existsSync(d)) || candidateDataDirs[0];
 const DB_FILE = path.join(DATA_DIR, 'lifeflow_db.json');
 
 export interface DatabaseSchema {
@@ -39,8 +48,29 @@ export function generateSalt(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
+const isProd = process.env.NODE_ENV === 'production';
 const defaultSalt = '8a7e32c10b4f65d9e8a7e32c10b4f65d';
-const defaultHash = hashPassword('LifeFlow@2026Admin', defaultSalt);
+const defaultHash = !isProd ? hashPassword('LifeFlow@2026Admin', defaultSalt) : '';
+
+export function validateAdminCredentials(): void {
+  const isProdMode = process.env.NODE_ENV === 'production';
+  const db = getDb();
+  if (process.env.ADMIN_PASSWORD) {
+    const salt = db.admin.salt || generateSalt();
+    db.admin.salt = salt;
+    db.admin.hash = hashPassword(process.env.ADMIN_PASSWORD, salt);
+    if (process.env.ADMIN_USERNAME) {
+      db.admin.username = process.env.ADMIN_USERNAME;
+    }
+    saveDb(db);
+  }
+  if (isProdMode) {
+    if (!db.admin || !db.admin.hash) {
+      console.error('FATAL: In production mode, ADMIN_PASSWORD must be configured in environment variables.');
+      process.exit(1);
+    }
+  }
+}
 
 const INITIAL_DB: DatabaseSchema = {
   inventory: [

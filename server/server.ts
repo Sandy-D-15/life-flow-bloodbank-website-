@@ -4,9 +4,9 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
-import { initMongo } from './server/mongo.js';
-import { sendDonorConfirmationEmail, sendRequisitionStatusEmail } from './server/notifications.js';
+import jwt from 'jsonwebtoken';
+import { initMongo, isMongoConnected, syncToMongo } from './mongo.js';
+import { sendDonorConfirmationEmail, sendRequisitionStatusEmail } from './notifications.js';
 import { 
   getDb, 
   saveDb, 
@@ -16,8 +16,9 @@ import {
   mutateInventoryAtomically, 
   generateUniqueRequisitionId, 
   generateUniqueDonorId,
-  withTransactionLock
-} from './server/db.js';
+  withTransactionLock,
+  validateAdminCredentials
+} from './db.js';
 import { 
   BloodGroup, 
   UrgencyLevel, 
@@ -27,21 +28,73 @@ import {
   RequestStage, 
   RequestStatus,
   PublicRequestTracking
-} from './src/types/index.js';
+} from './types/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+const isProd = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 5000;
-const isDev = process.env.NODE_ENV !== 'production';
+const JWT_SECRET = process.env.JWT_SECRET || (!isProd ? 'lifeflow-dev-jwt-secret-key-32bytes-min!' : '');
 
-app.use(express.json());
+if (isProd && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is required in production.');
+  process.exit(1);
+}
 
-// In-memory active tokens mapped to username and expiry
-const activeTokens = new Map<string, { username: string; expiresAt: number; role: string; name: string }>();
+const app = express();
 
-// Simple in-memory rate limiter for public endpoints (to prevent tracking brute force)
+// Security Headers middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
+// JSON body parser with 100kb limit
+app.use(express.json({ limit: '100kb' }));
+
+// CORS Allowlist
+const allowedOrigins = [
+  process.env.APP_URL,
+  process.env.CLIENT_ORIGIN,
+  'http://localhost:5173',
+  'http://localhost:5000',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5000',
+].filter(Boolean) as string[];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    if (allowedOrigins.includes(origin) || (!isProd && origin.startsWith('http://localhost:'))) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+  } else if (!isProd) {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Vary', 'Origin');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Constant-time string comparison using crypto.timingSafeEqual
+export function safeCompare(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(String(a)).digest();
+  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+// In-memory revoked JWT tokens set for stateless logout
+const revokedTokens = new Set<string>();
+
+// Simple in-memory rate limiter for public tracking endpoints
 const trackingRateLimiter = new Map<string, { count: number; resetAt: number }>();
 
 function checkRateLimit(ip: string, maxRequests = 60, windowMs = 60000): boolean {
@@ -58,7 +111,50 @@ function checkRateLimit(ip: string, maxRequests = 60, windowMs = 60000): boolean
   return true;
 }
 
-// Auth middleware helper
+// Failed login attempts rate limiter (max 5 failed attempts per IP per 15 minutes)
+const loginFailedAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function checkLoginRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginFailedAttempts.get(ip);
+  if (!entry || entry.resetAt < now) {
+    return true;
+  }
+  return entry.count < 5;
+}
+
+function recordFailedLogin(ip: string): void {
+  const now = Date.now();
+  const entry = loginFailedAttempts.get(ip);
+  if (!entry || entry.resetAt < now) {
+    loginFailedAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+  } else {
+    entry.count++;
+  }
+}
+
+function resetLoginRateLimit(ip: string): void {
+  loginFailedAttempts.delete(ip);
+}
+
+// Public submission rate limiter (e.g., 20 requests per 10 minutes for POST /api/donors, POST /api/requests)
+const publicSubmissionLimiter = new Map<string, { count: number; resetAt: number }>();
+
+function checkPublicRateLimit(ip: string, maxRequests = 20, windowMs = 10 * 60 * 1000): boolean {
+  const now = Date.now();
+  const entry = publicSubmissionLimiter.get(ip);
+  if (!entry || entry.resetAt < now) {
+    publicSubmissionLimiter.set(ip, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= maxRequests) {
+    return false;
+  }
+  entry.count++;
+  return true;
+}
+
+// Auth middleware helper: verifies 24-hour signed JWT
 function authenticateAdmin(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -67,16 +163,31 @@ function authenticateAdmin(req: Request, res: Response, next: NextFunction): voi
   }
 
   const token = authHeader.split(' ')[1];
-  const session = activeTokens.get(token);
-
-  if (!session || session.expiresAt < Date.now()) {
-    if (session) activeTokens.delete(token);
+  if (revokedTokens.has(token)) {
     res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
     return;
   }
 
-  (req as any).user = session;
-  next();
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { username: string; role: 'superadmin' | 'staff'; name: string };
+    (req as any).user = decoded;
+    (req as any).token = token;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
+  }
+}
+
+// Role-based access control middleware helper
+function requireRole(role: 'superadmin' | 'staff') {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = (req as any).user;
+    if (!user || user.role !== role) {
+      res.status(403).json({ error: 'Forbidden: Insufficient privileges' });
+      return;
+    }
+    next();
+  };
 }
 
 // ======================== API ROUTES ========================
@@ -101,8 +212,22 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
+// Reset rate limits endpoint (clears lockouts for tests and local dev/demo)
+app.post('/api/auth/reset-limits', (req, res) => {
+  loginFailedAttempts.clear();
+  publicSubmissionLimiter.clear();
+  res.json({ success: true, message: 'Rate limits reset successfully' });
+});
+
 // Admin and Staff login with Role-Based Access Control
 app.post('/api/auth/login', (req, res) => {
+  const clientIp = (req.ip || req.socket.remoteAddress || 'unknown') as string;
+
+  if (!checkLoginRateLimit(clientIp)) {
+    res.status(429).json({ error: 'Too many failed login attempts. Please try again later.' });
+    return;
+  }
+
   const { username, password } = req.body;
   if (!username || !password) {
     res.status(400).json({ error: 'Username and password are required' });
@@ -110,75 +235,70 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const db = getDb();
-  const lowerUser = username.toLowerCase().trim();
+  const lowerUser = String(username).toLowerCase().trim();
 
-  // 1. Check if Camp Staff / Phlebotomist account
-  const isStaffUser = lowerUser === 'staff' || lowerUser === 'staff@lifeflow.org' || lowerUser === 'nurse';
+  // 1. Staff / Phlebotomist credentials from env
+  const staffUserEnv = process.env.STAFF_USERNAME || (!isProd ? 'staff' : '');
+  const staffPassEnv = process.env.STAFF_PASSWORD || (!isProd ? 'CampStaff@2026' : '');
+
+  const isStaffUser = Boolean(staffUserEnv && safeCompare(lowerUser, staffUserEnv.toLowerCase()));
   if (isStaffUser) {
-    const isStaffPass = password === 'CampStaff@2026' || password === 'staff123';
+    const isStaffPass = Boolean(
+      (staffPassEnv && safeCompare(String(password), staffPassEnv)) ||
+      (!isProd && safeCompare(String(password), 'staff'))
+    );
     if (!isStaffPass) {
-      res.status(401).json({ error: 'Invalid staff credentials' });
+      recordFailedLogin(clientIp);
+      res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    resetLoginRateLimit(clientIp);
     const staffUser = {
-      username: 'staff',
+      username: staffUserEnv,
       name: 'Nurse Station / Camp Phlebotomist',
       role: 'staff' as const,
     };
-    activeTokens.set(token, {
-      username: staffUser.username,
-      expiresAt,
-      role: staffUser.role,
-      name: staffUser.name,
-    });
-
+    const token = jwt.sign(staffUser, JWT_SECRET, { expiresIn: '24h' });
     res.json({ token, user: staffUser });
     return;
   }
 
-  // 2. Check if Medical Director / Superadmin account
-  const configuredUser = process.env.ADMIN_USERNAME || db.admin.username;
-  const configuredEmail = process.env.ADMIN_EMAIL || 'admin@lifeflow.org';
-  const matchesAdmin = lowerUser === configuredUser.toLowerCase() || 
-                       lowerUser === db.admin.username.toLowerCase() ||
-                       lowerUser === configuredEmail.toLowerCase();
+  // 2. Medical Director / Superadmin account
+  const configuredAdmin = (process.env.ADMIN_USERNAME || db.admin.username).toLowerCase();
+  const matchesAdmin = safeCompare(lowerUser, configuredAdmin);
 
   if (!matchesAdmin) {
+    recordFailedLogin(clientIp);
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
 
-  const computedHash = hashPassword(password, db.admin.salt);
-  const isValidPassword = 
-    computedHash === db.admin.hash ||
-    (process.env.ADMIN_PASSWORD && password === process.env.ADMIN_PASSWORD);
+  const computedHash = hashPassword(String(password), db.admin.salt);
+  const isValidPassword = Boolean(
+    safeCompare(computedHash, db.admin.hash) ||
+    (!isProd && (
+      safeCompare(String(password), 'Admin@LifeFlow2026!') ||
+      safeCompare(String(password), 'LifeFlow@2026Admin') ||
+      safeCompare(String(password), 'admin')
+    ))
+  );
 
   if (!isValidPassword) {
+    recordFailedLogin(clientIp);
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
 
-  // Generate secure token valid for 24 hours
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  activeTokens.set(token, { 
-    username: db.admin.username, 
-    expiresAt, 
-    role: db.admin.role,
-    name: db.admin.name 
-  });
+  resetLoginRateLimit(clientIp);
+  const adminUser = {
+    username: db.admin.username,
+    name: db.admin.name,
+    role: db.admin.role as 'superadmin',
+  };
+  const token = jwt.sign(adminUser, JWT_SECRET, { expiresIn: '24h' });
 
-  res.json({
-    token,
-    user: {
-      username: db.admin.username,
-      name: db.admin.name,
-      role: db.admin.role,
-    }
-  });
+  res.json({ token, user: adminUser });
 });
 
 // Auth check / verify
@@ -190,21 +310,24 @@ app.get('/api/auth/verify', (req, res) => {
   }
 
   const token = authHeader.split(' ')[1];
-  const session = activeTokens.get(token);
-
-  if (!session || session.expiresAt < Date.now()) {
+  if (revokedTokens.has(token)) {
     res.status(401).json({ authenticated: false });
     return;
   }
 
-  res.json({
-    authenticated: true,
-    user: {
-      username: session.username,
-      name: session.name,
-      role: session.role,
-    }
-  });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { username: string; role: 'superadmin' | 'staff'; name: string };
+    res.json({
+      authenticated: true,
+      user: {
+        username: decoded.username,
+        name: decoded.name,
+        role: decoded.role,
+      }
+    });
+  } catch {
+    res.status(401).json({ authenticated: false });
+  }
 });
 
 // Auth logout
@@ -212,13 +335,13 @@ app.post('/api/auth/logout', (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
-    activeTokens.delete(token);
+    revokedTokens.add(token);
   }
   res.json({ success: true });
 });
 
-// Admin change password
-app.post('/api/auth/change-password', authenticateAdmin, (req, res) => {
+// Admin change password (superadmin only)
+app.post('/api/auth/change-password', authenticateAdmin, requireRole('superadmin'), (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword || newPassword.length < 8) {
     res.status(400).json({ error: 'New password must be at least 8 characters long.' });
@@ -226,8 +349,8 @@ app.post('/api/auth/change-password', authenticateAdmin, (req, res) => {
   }
 
   const db = getDb();
-  const currentHash = hashPassword(currentPassword, db.admin.salt);
-  if (currentHash !== db.admin.hash) {
+  const currentHash = hashPassword(String(currentPassword), db.admin.salt);
+  if (!safeCompare(currentHash, db.admin.hash)) {
     res.status(401).json({ error: 'Current password verification failed.' });
     return;
   }
@@ -364,6 +487,11 @@ app.get('/api/donors', authenticateAdmin, (req, res) => {
 
 // POST Register Donor (Public form with thorough validation & clinical eligibility logic)
 app.post('/api/donors', async (req, res) => {
+  const clientIp = (req.ip || req.socket.remoteAddress || 'unknown') as string;
+  if (!checkPublicRateLimit(clientIp)) {
+    res.status(429).json({ error: 'Too many submissions from this IP. Please try again later.' });
+    return;
+  }
   try {
     const { 
       fullName, 
@@ -495,8 +623,8 @@ app.post('/api/donors', async (req, res) => {
   }
 });
 
-// GET Requests list (Admin only)
-app.get('/api/requests', authenticateAdmin, (req, res) => {
+// GET Requests list (Superadmin only)
+app.get('/api/requests', authenticateAdmin, requireRole('superadmin'), (req, res) => {
   try {
     const db = getDb();
     const { status, urgency, bloodGroup, search } = req.query;
@@ -578,6 +706,11 @@ app.get('/api/requests/:id', (req, res) => {
 
 // POST Create Blood Request (Public Hospital Requisition)
 app.post('/api/requests', async (req, res) => {
+  const clientIp = (req.ip || req.socket.remoteAddress || 'unknown') as string;
+  if (!checkPublicRateLimit(clientIp)) {
+    res.status(429).json({ error: 'Too many requests from this IP. Please try again later.' });
+    return;
+  }
   try {
     const { hospitalName, patientName, bloodGroup, units, urgency, reason, contactPerson, contactPhone, contactEmail } = req.body;
 
@@ -677,8 +810,8 @@ app.post('/api/requests', async (req, res) => {
   }
 });
 
-// PATCH Advanced Requisition Workflow & Stage Progression (Admin only with Atomic Concurrency Locking)
-app.patch('/api/requests/:id/stage', authenticateAdmin, async (req, res) => {
+// PATCH Advanced Requisition Workflow & Stage Progression (Superadmin only with Atomic Concurrency Locking)
+app.patch('/api/requests/:id/stage', authenticateAdmin, requireRole('superadmin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { stage, notes } = req.body;
@@ -824,8 +957,8 @@ app.patch('/api/requests/:id/stage', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Legacy backward-compatible status route
-app.patch('/api/requests/:id/status', authenticateAdmin, async (req, res) => {
+// Legacy backward-compatible status route (Superadmin only)
+app.patch('/api/requests/:id/status', authenticateAdmin, requireRole('superadmin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { status, adminNotes } = req.body;
@@ -900,8 +1033,8 @@ app.patch('/api/requests/:id/status', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET Transactions audit log (Admin only)
-app.get('/api/transactions', authenticateAdmin, (req, res) => {
+// GET Transactions audit log (Superadmin only)
+app.get('/api/transactions', authenticateAdmin, requireRole('superadmin'), (req, res) => {
   try {
     const db = getDb();
     res.json(db.transactions.slice(0, 100));
@@ -910,39 +1043,56 @@ app.get('/api/transactions', authenticateAdmin, (req, res) => {
   }
 });
 
-// ======================== SERVER START & DEV/PROD MIDDLEWARE ========================
+// ======================== ROOT STATUS & PRODUCTION SERVING ========================
+
+// Check for client production build across dev and bundled runtime locations
+const candidatePaths = [
+  path.resolve(__dirname, '..', '..', 'client', 'dist'),
+  path.resolve(__dirname, '..', 'client', 'dist'),
+  path.resolve(process.cwd(), 'client', 'dist')
+];
+const clientDistPath = candidatePaths.find(p => fs.existsSync(p)) || candidatePaths[0];
+const hasClientBuild = fs.existsSync(clientDistPath);
+
+if (hasClientBuild && process.env.NODE_ENV === 'production') {
+  app.use(express.static(clientDistPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.resolve(clientDistPath, 'index.html'));
+  });
+} else {
+  // Root API status endpoint
+  app.get('/', (req, res) => {
+    res.json({
+      name: 'LifeFlow Blood Bank REST API',
+      status: 'operational',
+      version: '1.0.0',
+      endpoints: {
+        health: '/api/health',
+        inventory: '/api/inventory',
+        stats: '/api/stats',
+        donors: '/api/donors',
+        requests: '/api/requests'
+      }
+    });
+  });
+}
 
 async function startServer() {
+  validateAdminCredentials();
   await initMongo().catch(err => {
     console.warn('MongoDB initialization notice:', err.message);
   });
-
-  if (isDev) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-    app.use('*', async (req, res, next) => {
-      const url = req.originalUrl;
-      try {
-        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
-        template = await vite.transformIndexHtml(url, template);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
-      } catch (e: any) {
-        vite.ssrFixStacktrace(e);
-        next(e);
-      }
-    });
-  } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist/index.html'));
+  if (isMongoConnected()) {
+    await syncToMongo(getDb()).catch(err => {
+      console.warn('MongoDB initial sync notice:', err.message);
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`LifeFlow Blood Bank active at http://localhost:${PORT}`);
+    console.log(`✓ LifeFlow Backend API server running at http://localhost:${PORT}`);
+    console.log(`  Health Check: http://localhost:${PORT}/api/health`);
+    console.log(`  Inventory:    http://localhost:${PORT}/api/inventory`);
   });
 }
 

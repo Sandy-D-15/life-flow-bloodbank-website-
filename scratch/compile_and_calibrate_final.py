@@ -1,15 +1,12 @@
 import os
 import re
-import sys
-import time
-import docx
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
-from docx.enum.section import WD_SECTION, WD_ORIENTATION
-from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import nsdecls, qn
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.section import WD_SECTION
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from PIL import Image
 import pymupdf
 import win32com.client as win32
@@ -20,7 +17,6 @@ from report_docx_builder import (
     set_table_borders,
     make_header_repeat,
     prevent_row_split,
-    add_callout,
     add_code_block
 )
 
@@ -229,14 +225,13 @@ def build_docx(page_map=None, output_docx='output/LifeFlow_Project_Report.docx')
     p_cert_body = doc.add_paragraph()
     p_cert_body.paragraph_format.space_before = Pt(8)
     p_cert_body.paragraph_format.space_after = Pt(10)
-    p_cert_body.paragraph_format.line_spacing = 1.35
-    r_cb1 = p_cert_body.add_run("This is to certify that the project report entitled ")
+    p_cert_body.add_run("This is to certify that the project report entitled ")
     r_cb2 = p_cert_body.add_run('"LIFEFLOW BLOOD BANK MANAGEMENT SYSTEM" ')
     r_cb2.font.bold = True
-    r_cb3 = p_cert_body.add_run("is a bonafide work carried out by ")
+    p_cert_body.add_run("is a bonafide work carried out by ")
     r_cb4 = p_cert_body.add_run("Mr. / Miss [[STUDENT NAME]] ")
     r_cb4.font.bold = True
-    r_cb5 = p_cert_body.add_run(
+    p_cert_body.add_run(
         "for the practical examination of Bachelor of Science in Computer Science (B.Sc. CS), "
         "Semester – V of the academic year 2026–2027 in this college.\n\n"
         "The candidate has successfully completed the project work under the guidance and supervision "
@@ -957,7 +952,7 @@ def main():
             break
     print(f"Front matter occupies exactly {fm_count} pages (Cover + Roman pages). Chapter 1 starts at PDF page {fm_count+1}.")
 
-    page_map, total_pages = extract_pdf_page_map(pdf_file, front_matter_pages=fm_count)
+    page_map, _ = extract_pdf_page_map(pdf_file, front_matter_pages=fm_count)
 
     # PASS 2: Re-build with exact page map injected into TOC, LOT, LOF
     print("\n========== PASS 2: INJECTING EXACT PAGE MAP & RE-EXPORTING ==========")

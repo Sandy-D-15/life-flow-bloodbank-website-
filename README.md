@@ -2,7 +2,7 @@
 
 > **Tagline:** “Saving Lives, One Drop at a Time”  
 > **System:** LifeFlow Verified Blood Bank Management & Hospital Requisition Engine  
-> **Status:** Fully Operational & Automated Test Verified (14/14 tests passing)
+> **Status:** Fully Operational & Automated Test Verified (21/21 tests passing)
 
 ---
 
@@ -20,10 +20,13 @@ The system enforces strict data integrity rules:
 
 ## 2. Administrator Authentication & Evaluation Credentials
 
-- **Username:** `admin`
-- **Master Password:** `LifeFlow@2026Admin`
-- **Role:** `superadmin` / Medical Director (`Dr. Victoria Shaw`)
-- **Session Lifespan:** 24-Hour Bearer Token, cryptographically generated with SHA-512 PBKDF2 salting.
+Demo credentials are set via `.env` (see `.env.example`).
+For examiner demonstration, refer to the local-only `DEMO_CREDENTIALS.md` file.
+
+- **Role Capabilities:**
+  - `superadmin` / Medical Director: Full triage, inventory atomic mutation, audit logs, and settings.
+  - `staff` / Phlebotomist: Volunteer intake, donor registry access, and availability review.
+- **Session Lifespan:** 24-Hour Signed JSON Web Token (JWT) with strict role-based access control.
 
 ---
 
@@ -154,17 +157,24 @@ npm test
   ✓ Inventory contains exact ABO and Rh standard groups
   ✓ Donor under 18 years is rejected with 400
   ✓ Valid donor is registered with assigned DNR-xxxx ID
+  ✓ Donor schedule preserves preferred & alternate dates
+  ✓ Donor schedule links chosen donation center
   ✓ Hospital requisition generates unique collision-free REQ reference
   ✓ Public tracking retrieves initial Submitted stage
   ✓ Public tracking does not leak contactEmail or phone
   ✓ Unauthenticated admin access to requests is blocked with 401
   ✓ Administrator login succeeds with bearer token
+  ✓ Camp Staff login succeeds with staff role
+  ✓ Staff role is forbidden (403) from accessing hospital requisitions
+  ✓ Invalid login returns 401 with generic error message
+  ✓ Tampered JWT token signature is rejected with 401
   ✓ Intake (+) correctly adds units and logs previous/resulting balance
   ✓ Dispatch (-) is blocked with 400 when requested quantity exceeds available stock
   ✓ Requisition transitions to Triage Review with audit entry
   ✓ Audit log contains recorded append-only transactions
+  ✓ 6th failed login attempt is blocked with 429 rate limit
 
---- Test Results: 14 passed, 0 failed ---
+--- Test Results: 21 passed, 0 failed ---
 ```
 
 ---
@@ -183,6 +193,11 @@ npm run dev
 npm run build
 npm start
 ```
+
+> [!CAUTION]
+> **Submission & Zip-Safe Hygiene:**  
+> Never include `.env` or `.git/` in an academic or production submission archive (`.zip`). Always configure secrets and API credentials through platform environment variables or reference templates (`.env.example`).
+
 
 
 ## Animation approach (LifeFlow refinement)

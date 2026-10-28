@@ -4,13 +4,56 @@
  * concurrency locking, rate limiting, and data privacy sanitization.
  */
 
+import 'dotenv/config';
+import { spawn, ChildProcess } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const PORT = process.env.PORT || 5000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'LifeFlow@2026Admin';
+const STAFF_USERNAME = process.env.STAFF_USERNAME || 'staff';
+const STAFF_PASSWORD = process.env.STAFF_PASSWORD || 'CampStaff@2026';
+
+async function ensureServerRunning(): Promise<ChildProcess | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/health`);
+    if (res.ok) return null;
+  } catch {}
+
+  console.log(`[LifeFlow Tests] Starting backend test server at ${BASE_URL}...`);
+  const serverPath = path.resolve(__dirname, '../server/server.ts');
+  const serverProcess = spawn('npx', ['tsx', serverPath], {
+    cwd: path.resolve(__dirname, '..'),
+    shell: true,
+    stdio: 'ignore'
+  });
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < 15000) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/health`);
+      if (res.ok) {
+        console.log('[LifeFlow Tests] Backend test server ready.');
+        return serverProcess;
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  throw new Error('Backend test server failed to start within 15 seconds.');
+}
 
 async function runTests() {
   console.log('--- Starting LifeFlow Automated Test Suite ---');
   let passed = 0;
   let failed = 0;
+  let serverProcess: ChildProcess | null = null;
 
   async function assert(desc: string, condition: boolean, extra?: string) {
     if (condition) {
@@ -23,6 +66,8 @@ async function runTests() {
   }
 
   try {
+    serverProcess = await ensureServerRunning();
+
     // 1. Health check
     const healthRes = await fetch(`${BASE_URL}/api/health`);
     const healthData = await healthRes.json();
@@ -113,7 +158,7 @@ async function runTests() {
     const loginRes = await fetch(`${BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'admin', password: 'LifeFlow@2026Admin' })
+      body: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD })
     });
     const loginData = await loginRes.json();
     const token = loginData.token;
@@ -123,10 +168,35 @@ async function runTests() {
     const staffLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'staff', password: 'CampStaff@2026' })
+      body: JSON.stringify({ username: STAFF_USERNAME, password: STAFF_PASSWORD })
     });
     const staffData = await staffLoginRes.json();
     await assert('Camp Staff login succeeds with staff role', staffLoginRes.ok && staffData.user.role === 'staff');
+
+    // Security Test: staff token gets 403 on GET /api/requests
+    const staffReqRes = await fetch(`${BASE_URL}/api/requests`, {
+      headers: { Authorization: `Bearer ${staffData.token}` }
+    });
+    await assert('Staff role is forbidden (403) from accessing hospital requisitions', staffReqRes.status === 403);
+
+    // Security Test: invalid login returns 401 with generic message
+    const badLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'nonexistent_user', password: 'wrongpassword' })
+    });
+    const badLoginData = await badLoginRes.json();
+    await assert(
+      'Invalid login returns 401 with generic error message',
+      badLoginRes.status === 401 && badLoginData.error === 'Invalid credentials'
+    );
+
+    // Security Test: tampered JWT is rejected with 401
+    const tamperedToken = (typeof token === 'string' ? token.slice(0, -6) : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.fake') + 'xyz123';
+    const tamperedRes = await fetch(`${BASE_URL}/api/requests`, {
+      headers: { Authorization: `Bearer ${tamperedToken}` }
+    });
+    await assert('Tampered JWT token signature is rejected with 401', tamperedRes.status === 401);
 
     // 6. Explicit Inventory Operations: Intake (+), Dispatch (-), Count (=)
     // Intake (+)
@@ -185,9 +255,36 @@ async function runTests() {
     const auditData = await auditRes.json();
     await assert('Audit log contains recorded append-only transactions', Array.isArray(auditData) && auditData.length > 0);
 
+    // 9. Rate limiting on failed login attempts (6th failed attempt returns 429)
+    // Note: 1 failed attempt was recorded earlier in the invalid login test.
+    for (let i = 2; i <= 5; i++) {
+      await fetch(`${BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'bruteforce_probe', password: 'bad_password' })
+      });
+    }
+    const rateLimitedRes = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'bruteforce_probe', password: 'bad_password' })
+    });
+    const rateLimitedData = await rateLimitedRes.json();
+    await assert(
+      '6th failed login attempt is blocked with 429 rate limit',
+      rateLimitedRes.status === 429 && Boolean(rateLimitedData.error && rateLimitedData.error.includes('Too many failed login attempts'))
+    );
+
+    // Clean up lockout so local server / demo is not left locked out
+    await fetch(`${BASE_URL}/api/auth/reset-limits`, { method: 'POST' }).catch(() => {});
+
   } catch (err: any) {
     console.error('Test execution error:', err);
     failed++;
+  } finally {
+    if (serverProcess) {
+      serverProcess.kill();
+    }
   }
 
   console.log(`\n--- Test Results: ${passed} passed, ${failed} failed ---`);
