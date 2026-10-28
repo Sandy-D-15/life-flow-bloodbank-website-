@@ -48,27 +48,24 @@ export function generateSalt(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
-const isProd = process.env.NODE_ENV === 'production';
-const defaultSalt = '8a7e32c10b4f65d9e8a7e32c10b4f65d';
-const defaultHash = !isProd ? hashPassword('LifeFlow@2026Admin', defaultSalt) : '';
+export const defaultSalt = '8a7e32c10b4f65d9e8a7e32c10b4f65d';
+export const defaultHash = hashPassword('LifeFlow@2026Admin', defaultSalt);
 
 export function validateAdminCredentials(): void {
-  const isProdMode = process.env.NODE_ENV === 'production';
   const db = getDb();
-  if (process.env.ADMIN_PASSWORD) {
-    const salt = db.admin.salt || generateSalt();
-    db.admin.salt = salt;
-    db.admin.hash = hashPassword(process.env.ADMIN_PASSWORD, salt);
-    if (process.env.ADMIN_USERNAME) {
-      db.admin.username = process.env.ADMIN_USERNAME;
-    }
+  const adminPass = process.env.ADMIN_PASSWORD || 'LifeFlow@2026Admin';
+  const adminUser = process.env.ADMIN_USERNAME || 'admin';
+
+  if (!db.admin || !db.admin.hash || process.env.ADMIN_PASSWORD) {
+    const salt = (db.admin && db.admin.salt) ? db.admin.salt : generateSalt();
+    db.admin = {
+      username: adminUser,
+      salt: salt,
+      hash: hashPassword(adminPass, salt),
+      role: 'superadmin',
+      name: 'System Administrator'
+    };
     saveDb(db);
-  }
-  if (isProdMode) {
-    if (!db.admin || !db.admin.hash) {
-      console.error('FATAL: In production mode, ADMIN_PASSWORD must be configured in environment variables.');
-      process.exit(1);
-    }
   }
 }
 

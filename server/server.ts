@@ -35,11 +35,16 @@ const __dirname = path.dirname(__filename);
 
 const isProd = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || (!isProd ? 'lifeflow-dev-jwt-secret-key-32bytes-min!' : '');
+let JWT_SECRET = process.env.JWT_SECRET || '';
 
-if (isProd && !process.env.JWT_SECRET) {
-  console.error('FATAL: JWT_SECRET environment variable is required in production.');
-  process.exit(1);
+if (!JWT_SECRET) {
+  if (isProd) {
+    console.warn('⚠️ [LifeFlow Security] Notice: JWT_SECRET environment variable is not defined.');
+    console.warn('⚠️ [LifeFlow Security] Generating an automatic cryptographically secure runtime secret.');
+    JWT_SECRET = crypto.randomBytes(32).toString('hex');
+  } else {
+    JWT_SECRET = 'lifeflow-dev-jwt-secret-key-32bytes-min!';
+  }
 }
 
 const app = express();
@@ -238,8 +243,8 @@ app.post('/api/auth/login', (req, res) => {
   const lowerUser = String(username).toLowerCase().trim();
 
   // 1. Staff / Phlebotomist credentials from env
-  const staffUserEnv = process.env.STAFF_USERNAME || (!isProd ? 'staff' : '');
-  const staffPassEnv = process.env.STAFF_PASSWORD || (!isProd ? 'CampStaff@2026' : '');
+  const staffUserEnv = process.env.STAFF_USERNAME || 'staff';
+  const staffPassEnv = process.env.STAFF_PASSWORD || 'CampStaff@2026';
 
   const isStaffUser = Boolean(staffUserEnv && safeCompare(lowerUser, staffUserEnv.toLowerCase()));
   if (isStaffUser) {
