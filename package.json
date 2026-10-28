@@ -14,6 +14,7 @@
     "build:client": "npm --prefix client run build",
     "build:server": "npm --prefix server run build",
     "build": "npm run build:server && npm run build:client",
+    "prestart": "npm run build:server",
     "start": "npm --prefix server start",
     "test": "npm --prefix server test"
   },
