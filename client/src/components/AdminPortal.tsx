@@ -356,8 +356,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <button
               type="button"
               onClick={() => {
-                setUsername('admin');
-                setPassword('LifeFlow@2026Admin');
                 setSelectedRolePreset('admin');
               }}
               className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
@@ -378,8 +376,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <button
               type="button"
               onClick={() => {
-                setUsername('staff');
-                setPassword('CampStaff@2026');
                 setSelectedRolePreset('staff');
               }}
               className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
@@ -431,7 +427,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 data-lpignore="true"
                 required
                 value={username}
-                placeholder="Enter username (e.g. admin or staff)"
+                placeholder="Enter username"
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
               />
@@ -462,33 +458,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
-              </div>
-            </div>
-
-            {/* Quick Helper for Demo Credentials */}
-            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-700">Demo Login:</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (selectedRolePreset === 'staff') {
-                      setUsername('staff');
-                      setPassword('CampStaff@2026');
-                    } else {
-                      setUsername('admin');
-                      setPassword('LifeFlow@2026Admin');
-                    }
-                  }}
-                  className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer underline text-[10px]"
-                >
-                  Auto-fill Password
-                </button>
-              </div>
-              <div className="text-[10px] text-slate-500 font-mono">
-                {selectedRolePreset === 'staff' 
-                  ? 'User: staff | Pass: CampStaff@2026' 
-                  : 'User: admin | Pass: LifeFlow@2026Admin'}
               </div>
             </div>
 
